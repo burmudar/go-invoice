@@ -3,6 +3,7 @@ package eventbus
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math/rand"
 	"reflect"
 	"slices"
@@ -19,6 +20,7 @@ type eventPayload struct {
 }
 
 type Bus struct {
+	logger           *slog.Logger
 	subscribers      map[reflect.Type][]*subscription
 	dispatchersCount int
 	events           chan *eventPayload
@@ -49,8 +51,9 @@ func (s *subscription) Close() {}
 func (s *subscription) ID() int                 { return s.id }
 func (s *subscription) EventType() reflect.Type { return s.eventType }
 
-func New() *Bus {
+func New(logger *slog.Logger) *Bus {
 	return &Bus{
+		logger:           logger.With("name", "bus"),
 		subscribers:      make(map[reflect.Type][]*subscription),
 		dispatchersCount: 5,
 	}
@@ -135,6 +138,21 @@ func SubscribeWith[T any](bus *Bus, handler HandlerFunc[T]) Subscription {
 		bus:       bus,
 		eventType: key,
 		handler: func(ctx context.Context, event any) {
+			defer func() {
+				v := recover()
+				if v == nil {
+					return
+				}
+
+				var err error
+				switch x := v.(type) {
+				case error:
+					err = x
+				default:
+					err = fmt.Errorf("panic: %v", x)
+				}
+				bus.logger.Error("handler for panic", slog.Any("event", event), slog.String("err", err.Error()))
+			}()
 			ev, ok := event.(T)
 			if !ok {
 				return
@@ -145,7 +163,7 @@ func SubscribeWith[T any](bus *Bus, handler HandlerFunc[T]) Subscription {
 	}
 
 	bus.mu.Lock()
-	bus.subscribers[key] = subs
+	bus.subscribers[key] = append(subs, &subscription)
 	bus.mu.Unlock()
 
 	return &subscription
